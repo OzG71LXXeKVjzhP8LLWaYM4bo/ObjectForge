@@ -443,9 +443,13 @@ pub async fn serve() -> anyhow::Result<()> {
 }
 
 fn load_config() -> anyhow::Result<AppConfig> {
-    let api_bind_addr = env::var("API_BIND_ADDR")
-        .unwrap_or_else(|_| "127.0.0.1:8080".to_string())
-        .parse()?;
+    let api_bind_addr = match env::var("API_BIND_ADDR") {
+        Ok(value) => value.parse()?,
+        Err(_) => {
+            let port = env::var("PORT").unwrap_or_else(|_| "8080".to_string());
+            format!("0.0.0.0:{port}").parse()?
+        }
+    };
 
     Ok(AppConfig {
         api_bind_addr,

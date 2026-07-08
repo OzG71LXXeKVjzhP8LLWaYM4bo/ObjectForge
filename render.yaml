@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: object-forge-api
+    runtime: docker
+    rootDir: apps/api
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      - key: STORAGE_BACKEND
+        value: modal
+      - key: LOCAL_DATA_DIR
+        value: /tmp/roomfly-data
+      - key: REQUIRE_AUTH
+        value: true
+      - key: MAX_UPLOAD_BYTES
+        value: 157286400
+      - key: RUST_LOG
+        value: roomfly_api=info,tower_http=info

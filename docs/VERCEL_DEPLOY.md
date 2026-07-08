@@ -106,3 +106,23 @@ The first Rust deployment can take several minutes because Vercel compiles depen
 Vercel's Rust runtime is serverless. The API can use `/tmp` for short-lived upload handoff, but it cannot rely on persistent local disk.
 
 The current `/api/scenes/:scene_id/process` endpoint waits for Modal to finish. If Modal processing takes longer than the Vercel function duration available on your plan, move processing to an async job pattern: mark the scene as `processing`, call Modal asynchronously, and update Postgres from a callback or polling worker.
+
+## Easier Backend Alternative: Render
+
+For this Rust API, a long-running service host is simpler than Vercel functions.
+
+1. Create a new Render Web Service from the GitHub repo.
+2. Choose Docker.
+3. Set Root Directory to `apps/api`.
+4. Set Dockerfile Path to `./Dockerfile`.
+5. Add the same backend environment variables from this guide.
+6. Set:
+
+```env
+API_PUBLIC_URL=https://<render-service>.onrender.com
+WEB_ORIGIN=https://<web-project>.vercel.app
+LOCAL_DATA_DIR=/tmp/roomfly-data
+STORAGE_BACKEND=modal
+```
+
+Render provides `PORT`; the API automatically binds to it when `API_BIND_ADDR` is not set.
