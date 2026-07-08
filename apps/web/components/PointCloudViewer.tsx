@@ -21,7 +21,7 @@ export function PointCloudViewer({ url, glbUrl, activeHotspot }: Props) {
   const [source, setSource] = useState<RenderSource>("ply");
   const [confidence, setConfidence] = useState(50);
   const [frame, setFrame] = useState<number | "all">("all");
-  const [upAxis, setUpAxis] = useState<UpAxis>("z");
+  const [upAxis, setUpAxis] = useState<UpAxis>("y");
   const showGlb = source === "glb" && glbUrl;
 
   return (
