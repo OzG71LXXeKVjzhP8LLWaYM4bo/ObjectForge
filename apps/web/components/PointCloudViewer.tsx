@@ -15,13 +15,13 @@ type Props = {
 };
 
 type RenderSource = "ply" | "glb";
-type UpAxis = "y" | "z" | "x";
+type UpAxis = "auto" | "y" | "z" | "x";
 
 export function PointCloudViewer({ url, glbUrl, activeHotspot }: Props) {
   const [source, setSource] = useState<RenderSource>("ply");
   const [confidence, setConfidence] = useState(50);
   const [frame, setFrame] = useState<number | "all">("all");
-  const [upAxis, setUpAxis] = useState<UpAxis>("y");
+  const [upAxis, setUpAxis] = useState<UpAxis>("auto");
   const showGlb = source === "glb" && glbUrl;
 
   return (
@@ -91,14 +91,14 @@ export function PointCloudViewer({ url, glbUrl, activeHotspot }: Props) {
             />
           </label>
           <div className="inline-flex items-center overflow-hidden border border-white/30">
-            {(["y", "z", "x"] as const).map((axis) => (
+            {(["auto", "y", "z", "x"] as const).map((axis) => (
               <button
                 key={axis}
                 type="button"
                 onClick={() => setUpAxis(axis)}
                 className={`px-3 py-1 uppercase ${upAxis === axis ? "bg-white text-ink" : "text-white"}`}
               >
-                {axis}
+                {axis === "auto" ? "Auto" : axis}
               </button>
             ))}
           </div>
@@ -149,7 +149,9 @@ function PointCloudGlb({ url, upAxis }: { url: string; upAxis: UpAxis }) {
   const gltf = useLoader(GLTFLoader, url);
   const scene = useMemo(() => {
     const clone = gltf.scene.clone(true);
-    clone.rotation.copy(rotationForUpAxis(upAxis));
+    clone.updateWorldMatrix(true, true);
+    const rawBox = new THREE.Box3().setFromObject(clone);
+    clone.applyMatrix4(matrixForUpAxis(upAxis, rawBox));
     clone.updateWorldMatrix(true, true);
     const box = new THREE.Box3().setFromObject(clone);
     if (!box.isEmpty()) {
@@ -205,12 +207,13 @@ function filterPointGeometry(
   if (colors.length) {
     geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
   }
-  geometry.applyMatrix4(matrixForUpAxis(upAxis));
+  geometry.computeBoundingBox();
+  geometry.applyMatrix4(matrixForUpAxis(upAxis, geometry.boundingBox));
   centerGeometryOnFloor(geometry);
   return geometry;
 }
 
-function rotationForUpAxis(upAxis: UpAxis) {
+function rotationForUpAxis(upAxis: Exclude<UpAxis, "auto">) {
   switch (upAxis) {
     case "z":
       return new THREE.Euler(-Math.PI / 2, 0, 0);
@@ -221,8 +224,22 @@ function rotationForUpAxis(upAxis: UpAxis) {
   }
 }
 
-function matrixForUpAxis(upAxis: UpAxis) {
-  return new THREE.Matrix4().makeRotationFromEuler(rotationForUpAxis(upAxis));
+function matrixForUpAxis(upAxis: UpAxis, box?: THREE.Box3 | null) {
+  const resolvedAxis = upAxis === "auto" ? inferUpAxis(box) : upAxis;
+  return new THREE.Matrix4().makeRotationFromEuler(rotationForUpAxis(resolvedAxis));
+}
+
+function inferUpAxis(box?: THREE.Box3 | null): Exclude<UpAxis, "auto"> {
+  if (!box || box.isEmpty()) return "y";
+
+  const size = box.getSize(new THREE.Vector3());
+  const axes = [
+    ["x", size.x],
+    ["y", size.y],
+    ["z", size.z]
+  ] as const;
+
+  return axes.reduce((largest, current) => (current[1] > largest[1] ? current : largest))[0];
 }
 
 function centerGeometryOnFloor(geometry: THREE.BufferGeometry) {
