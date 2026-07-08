@@ -10,13 +10,21 @@ Required variables:
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/roomfly
 API_BIND_ADDR=127.0.0.1:8080
 API_PUBLIC_URL=http://localhost:8080
-WEB_ORIGIN=http://localhost:3000
+WEB_ORIGIN=http://localhost:3000,http://localhost:3001
 S3_BUCKET=roomfly-mvp
 S3_REGION=auto
 S3_ENDPOINT=http://localhost:9000
 S3_ACCESS_KEY_ID=minioadmin
 S3_SECRET_ACCESS_KEY=minioadmin
 MODAL_PROCESS_URL=https://...
+MODAL_SPLAT_URL=https://...
+MODAL_ASSET_URL=https://...
+REQUIRE_AUTH=true
+RATE_LIMIT_WINDOW_SECONDS=60
+RATE_LIMIT_UPLOADS_PER_WINDOW=3
+RATE_LIMIT_PROCESS_PER_WINDOW=4
+RATE_LIMIT_READS_PER_WINDOW=90
+RATE_LIMIT_ASSETS_PER_WINDOW=240
 ```
 
 Optional:
@@ -26,6 +34,8 @@ MODAL_AUTH_TOKEN=
 MAX_UPLOAD_BYTES=524288000
 RUST_LOG=roomfly_api=info,tower_http=info
 ```
+
+When `REQUIRE_AUTH=true`, mutating and scene-read endpoints require an `Authorization: Bearer <Clerk token>` header. Asset proxy requests remain URL-loadable for Three.js and images, but are still rate limited.
 
 ## Database
 
@@ -58,7 +68,7 @@ ok
 
 ### `POST /api/scenes`
 
-Creates a scene and uploads the raw video.
+Creates a reconstruction record and uploads the raw object capture video.
 
 Request:
 
@@ -120,6 +130,18 @@ Behavior:
 
 This endpoint is currently synchronous from the Rust API perspective: it waits for Modal to return. For larger reconstruction jobs, change this to enqueue work and poll a job handle.
 
+### `POST /api/scenes/{scene_id}/splat`
+
+Generates a browser-viewable Gaussian splat for a completed scene.
+
+Behavior:
+
+- Requires the scene status to be `done`.
+- Calls `MODAL_SPLAT_URL` with the same storage fields used by `/process`.
+- Merges returned `splatKey` into existing scene assets.
+- Sets `visualMode` to `splat` when generation succeeds.
+- Keeps the point-cloud scene usable and appends a warning when splat generation fails.
+
 ### `GET /api/scenes/{scene_id}/assets/{asset_name}`
 
 Proxies a generated asset from S3/R2.
@@ -147,6 +169,8 @@ Errors return:
 Typical causes:
 
 - missing `video` form field,
+- missing bearer token when auth is required,
+- rate limit exhaustion,
 - upload larger than `MAX_UPLOAD_BYTES`,
 - missing scene ID,
 - S3/R2 credential or bucket error,

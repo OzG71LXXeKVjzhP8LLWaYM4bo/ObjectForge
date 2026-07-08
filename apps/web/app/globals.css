@@ -12,9 +12,15 @@
 
 body {
   margin: 0;
-  background: #ebe7de;
-  color: #15171a;
-  font-family: Arial, Helvetica, sans-serif;
+  background: #f7f8f5;
+  color: #0f1214;
+  font-family: var(--font-body), Arial, Helvetica, sans-serif;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display), var(--font-body), Arial, Helvetica, sans-serif;
 }
 
 button,
@@ -24,12 +30,12 @@ input {
 
 .viewer-grid {
   display: grid;
-  grid-template-rows: minmax(420px, 1fr) 260px;
-  min-height: 100vh;
+  grid-template-rows: minmax(420px, calc(100vh - 56px));
+  min-height: calc(100vh - 56px);
 }
 
 @media (min-width: 900px) {
   .viewer-grid {
-    grid-template-rows: minmax(520px, 1fr) 300px;
+    grid-template-rows: minmax(520px, calc(100vh - 56px));
   }
 }

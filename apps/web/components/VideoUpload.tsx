@@ -1,6 +1,6 @@
 "use client";
 
-import { Upload } from "lucide-react";
+import { Camera, Upload } from "lucide-react";
 import { useRef, useState } from "react";
 
 type Props = {
@@ -13,24 +13,27 @@ export function VideoUpload({ disabled, onUpload }: Props) {
   const [fileName, setFileName] = useState<string>("");
 
   return (
-    <section className="rounded border border-line bg-white p-5 shadow-sm">
-      <div className="flex items-start justify-between gap-4">
+    <section className="border border-line bg-white p-5 shadow-sm">
+      <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-normal">RoomFly MVP</h1>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-neutral-700">
-            Upload a short phone video of one room. The demo extracts keyframes,
-            builds a point-cloud/floorplan route first, then uses Gaussian splats
-            when processing succeeds.
+          <div className="inline-flex items-center gap-2 border border-teal-700/25 bg-teal-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-teal-800">
+            <Camera size={14} />
+            Object capture
+          </div>
+          <h1 className="mt-4 text-2xl font-semibold tracking-tight">Create a 3D object reconstruction</h1>
+          <p className="mt-3 max-w-2xl text-sm leading-6 text-neutral-700">
+            Upload a short orbit capture of a single object. ObjectForge builds inspectable scene
+            assets from the clip and shows reconstruction progress as it runs.
           </p>
         </div>
         <button
           type="button"
           disabled={disabled}
           onClick={() => inputRef.current?.click()}
-          className="inline-flex h-11 items-center gap-2 rounded border border-ink bg-ink px-4 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex h-11 items-center justify-center gap-2 border border-obsidian bg-obsidian px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Upload size={18} />
-          Upload
+          Upload capture
         </button>
       </div>
 
@@ -48,7 +51,7 @@ export function VideoUpload({ disabled, onUpload }: Props) {
       />
 
       {fileName ? (
-        <p className="mt-4 text-sm text-neutral-700">Selected: {fileName}</p>
+        <p className="mt-4 border-t border-line pt-4 text-sm text-neutral-700">Selected: {fileName}</p>
       ) : null}
     </section>
   );

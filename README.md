@@ -1,18 +1,19 @@
-# RoomFly MVP
+# ObjectForge MVP
 
-RoomFly MVP is a hackathon prototype that turns a short one-room phone video into a browser-viewable room scene.
+ObjectForge is a hackathon prototype that turns short object capture videos into browser-viewable point clouds, GLB assets, capture footprints, and optional Gaussian splats.
 
 The current implementation attempts a real VGGT point-cloud path first, then falls back to a deterministic MVP point cloud if model loading or inference fails:
 
 ```text
 video upload
--> Rust API records scene state in Postgres and stores the upload locally for handoff
+-> Clerk-authenticated frontend uploads an object capture
+-> Rust API records reconstruction state in Postgres and stores the upload locally for handoff
 -> Rust API calls Modal
 -> Modal stores files in a Modal Volume, extracts keyframes, and runs VGGT reconstruction
--> frontend displays point cloud, floorplan, hotspots, and scene status
+-> frontend displays point cloud, capture footprint, previews, assets, and reconstruction status
 ```
 
-Gaussian splatting is represented as an optional pipeline boundary. The code is ready to return a splat asset when the Modal worker produces one, but the default visual mode remains point cloud so the app stays demoable even when Splatfacto fails.
+The Modal worker is intentionally left compatible with the original scene contract. Product language and UI now focus on object reconstruction, while the backend still stores `SceneResult` rows and asset keys.
 
 ## Repository Layout
 
@@ -56,6 +57,13 @@ cp apps/web/.env.example apps/web/.env.local
 cp modal/.env.example modal/.env
 ```
 
+Add Clerk keys to `apps/web/.env.local`:
+
+```env
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_...
+CLERK_SECRET_KEY=sk_test_...
+```
+
 Run the frontend:
 
 ```bash
@@ -76,19 +84,21 @@ cd modal
 modal deploy modal_app.py
 ```
 
-Then set the printed Modal endpoint URLs as `MODAL_PROCESS_URL` and `MODAL_ASSET_URL` in `apps/api/.env`.
+Then set the printed Modal endpoint URLs as `MODAL_PROCESS_URL`, `MODAL_SPLAT_URL`, and `MODAL_ASSET_URL` in `apps/api/.env`.
 
 ## Current Demo Behavior
 
 The app can:
 
-- upload one room video through the frontend,
+- show a polished landing page and Clerk-gated capture workspace,
+- upload an object capture video through the frontend,
 - use Modal Volume storage by default, with S3/R2 still available later,
 - create and update scene status in Postgres,
+- enforce bearer-token auth and strict in-memory API rate limits,
 - call a Modal web endpoint,
-- generate and serve a VGGT point cloud, depth/confidence previews, floorplan, cameras, hotspots, and processing log,
-- render the scene in a Three.js point-cloud viewer,
-- show a floorplan and Matterport-style hotspot buttons.
+- generate and serve a VGGT point cloud, GLB, depth/confidence previews, capture footprint, cameras, hotspots, and processing log,
+- render the reconstruction in a Three.js point-cloud viewer,
+- request optional splat generation from the separate Modal endpoint.
 
 The current Modal worker attempts VGGT first. If the model package, checkpoint access, GPU runtime, or inference fails, it logs a warning and uses the MVP fallback point cloud so the rest of the demo still works.
 

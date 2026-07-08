@@ -7,7 +7,7 @@ export function SceneInfoPanel({ scene }: { scene?: SceneResult }) {
       <div className="flex items-center gap-2">
         <Info size={18} />
         <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-600">
-          Scene
+          Reconstruction
         </h2>
       </div>
 
@@ -30,8 +30,8 @@ export function SceneInfoPanel({ scene }: { scene?: SceneResult }) {
       </dl>
 
       <p className="mt-5 text-sm leading-6 text-neutral-700">
-        Splat quality improves with slower camera motion, full corner coverage,
-        level framing, and consistent lighting.
+        Splat quality improves with slow orbit motion, complete object coverage,
+        sharp frames, and consistent lighting.
       </p>
 
       {scene?.assets.pointcloudUrl || scene?.assets.pointcloudGlbUrl ? (
@@ -39,7 +39,7 @@ export function SceneInfoPanel({ scene }: { scene?: SceneResult }) {
           {scene.assets.pointcloudUrl ? (
             <a
               href={scene.assets.pointcloudUrl}
-              className="rounded border border-line px-2 py-1 text-neutral-700"
+              className="border border-line px-2 py-1 text-neutral-700"
             >
               PLY
             </a>
@@ -47,7 +47,7 @@ export function SceneInfoPanel({ scene }: { scene?: SceneResult }) {
           {scene.assets.pointcloudGlbUrl ? (
             <a
               href={scene.assets.pointcloudGlbUrl}
-              className="rounded border border-line px-2 py-1 text-neutral-700"
+              className="border border-line px-2 py-1 text-neutral-700"
             >
               GLB
             </a>
@@ -72,7 +72,7 @@ export function SceneInfoPanel({ scene }: { scene?: SceneResult }) {
 function PreviewImage({ label, src }: { label: string; src: string }) {
   return (
     <figure>
-      <div className="aspect-square overflow-hidden rounded border border-line bg-neutral-100">
+      <div className="aspect-square overflow-hidden border border-line bg-neutral-100">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={src} alt={`${label} preview`} className="h-full w-full object-cover" />
       </div>

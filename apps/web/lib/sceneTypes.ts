@@ -8,6 +8,7 @@ export type SceneResult = {
     pointcloudUrl?: string;
     pointcloudGlbUrl?: string;
     splatUrl?: string;
+    rawSplatPlyUrl?: string;
     floorplanPngUrl?: string;
     floorplanSvgUrl?: string;
     floorplanJsonUrl?: string;

@@ -33,6 +33,7 @@ Put both into `apps/api/.env`:
 ```env
 STORAGE_BACKEND=modal
 MODAL_PROCESS_URL=https://your-workspace--roomfly-mvp-process-scene.modal.run
+MODAL_SPLAT_URL=https://your-workspace--roomfly-mvp-generate-splat.modal.run
 MODAL_ASSET_URL=https://your-workspace--roomfly-mvp-get-asset.modal.run
 ```
 

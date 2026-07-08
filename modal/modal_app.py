@@ -37,6 +37,33 @@ image = (
     )
 )
 
+splat_image = (
+    modal.Image.debian_slim(python_version="3.10")
+    .apt_install(
+        "build-essential",
+        "clang",
+        "cmake",
+        "ffmpeg",
+        "git",
+        "libgl1",
+        "libglib2.0-0",
+        "ninja-build",
+    )
+    .pip_install(
+        "torch",
+        "torchvision",
+        "xformers",
+    )
+    .pip_install(
+        "boto3",
+        "fastapi[standard]",
+        "numpy",
+        "Pillow",
+        "plyfile",
+        "git+https://github.com/ByteDance-Seed/depth-anything-3.git",
+    )
+)
+
 
 def lazy_boto3():
     import boto3
@@ -274,6 +301,122 @@ def get_asset(scene_id: str, asset_path: str):
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="asset not found")
     return FileResponse(path, media_type=guess_content_type(path))
+
+
+@app.function(
+    image=splat_image,
+    gpu=["L4", "A10G"],
+    timeout=7200,
+    volumes={"/data": volume},
+)
+@modal.fastapi_endpoint(method="POST")
+def generate_splat(payload: dict[str, Any]) -> dict[str, Any]:
+    scene_id = payload["scene_id"]
+    storage_backend = payload.get("storage_backend", "s3")
+    bucket = payload.get("s3_bucket")
+    input_video_key = payload.get("input_video_key", f"scenes/{scene_id}/input/input.mp4")
+    output_prefix = payload["output_prefix"].rstrip("/")
+    warnings: list[str] = []
+    started_at = time.time()
+
+    if storage_backend == "modal":
+        root_context = contextlib.nullcontext(str(Path("/data/scenes") / scene_id))
+    else:
+        root_context = tempfile.TemporaryDirectory(prefix=f"roomfly-splat-{scene_id}-")
+
+    with root_context as tmp:
+        root = Path(tmp)
+        root.mkdir(parents=True, exist_ok=True)
+        input_video = root / "input.mp4"
+        splat_dir = root / "splat"
+        metadata_dir = root / "metadata"
+        splat_dir.mkdir(parents=True, exist_ok=True)
+        metadata_dir.mkdir(parents=True, exist_ok=True)
+
+        s3 = None
+        if storage_backend == "modal":
+            video_payload = payload.get("video_bytes_base64")
+            if video_payload:
+                input_video.write_bytes(base64.b64decode(video_payload))
+            elif not input_video.exists():
+                raise RuntimeError("video_bytes_base64 is required for modal storage")
+        else:
+            if not bucket:
+                raise RuntimeError("s3_bucket is required for s3 storage")
+            s3 = make_s3_client()
+            s3.download_file(bucket, input_video_key, str(input_video))
+
+        processing_log: dict[str, Any] = {
+            "scene_id": scene_id,
+            "input_video_key": input_video_key,
+            "output_prefix": output_prefix,
+            "storage_backend": storage_backend,
+            "steps": [],
+        }
+
+        splat_backend = os.environ.get("ROOMFLY_SPLAT_BACKEND", "da3_ply").lower()
+        with tempfile.TemporaryDirectory(prefix=f"roomfly-splat-work-{scene_id}-") as work_tmp:
+            if splat_backend == "da3_gs":
+                raw_ply_path = run_da3_gaussian_splat(input_video, Path(work_tmp), splat_dir, processing_log)
+            elif splat_backend == "da3_ply":
+                raw_ply_path = run_da3_geometry_ply(input_video, Path(work_tmp), splat_dir, processing_log)
+            else:
+                raise RuntimeError(f"Unsupported ROOMFLY_SPLAT_BACKEND for this image: {splat_backend}")
+        splat_path = splat_dir / "room_splat.splat"
+        convert_gaussian_ply_to_splat(raw_ply_path, splat_path)
+        processing_log["steps"].append(
+            {
+                "name": "convert_gaussian_ply_to_splat",
+                "status": "done",
+                "input": raw_ply_path.name,
+                "output": splat_path.name,
+            }
+        )
+
+        processing_log["duration_seconds"] = round(time.time() - started_at, 2)
+        processing_log["warnings"] = warnings
+        processing_log_path = metadata_dir / "splat_processing_log.json"
+        processing_log_path.write_text(json.dumps(processing_log, indent=2), encoding="utf-8")
+
+        splat_key = store_asset(
+            storage_backend,
+            s3,
+            bucket,
+            output_prefix,
+            splat_path,
+            "splat/room_splat.splat",
+        )
+        raw_splat_ply_key = store_asset(
+            storage_backend,
+            s3,
+            bucket,
+            output_prefix,
+            raw_ply_path,
+            "splat/room_splat.ply",
+        )
+        processing_log_key = store_asset(
+            storage_backend,
+            s3,
+            bucket,
+            output_prefix,
+            processing_log_path,
+            "metadata/splat_processing_log.json",
+        )
+
+        if storage_backend == "modal":
+            volume.commit()
+
+        return {
+            "sceneId": scene_id,
+            "status": "done",
+            "visualMode": "splat",
+            "assets": {
+                "splatKey": splat_key,
+                "rawSplatPlyKey": raw_splat_ply_key,
+                "processingLogKey": processing_log_key,
+            },
+            "warnings": warnings,
+        }
 
 
 def make_s3_client():
@@ -926,6 +1069,412 @@ def run_splatfacto(paths: ScenePaths, log: dict[str, Any]) -> Path | None:
     return out
 
 
+def run_splatfacto_video(input_video: Path, root: Path, splat_dir: Path, log: dict[str, Any]) -> Path:
+    scene_dir = root / "nerfstudio_splat_scene"
+    output_dir = root / "nerfstudio_outputs"
+    exported_dir = root / "exported_splat"
+    num_frames_target = int(os.environ.get("ROOMFLY_SPLAT_NUM_FRAMES", "96"))
+    max_iterations = int(os.environ.get("ROOMFLY_SPLAT_MAX_ITERATIONS", "3500"))
+    scene_dir.mkdir(exist_ok=True)
+    output_dir.mkdir(exist_ok=True)
+    exported_dir.mkdir(exist_ok=True)
+
+    started_at = time.time()
+    run_logged_command(
+        [
+            "ns-process-data",
+            "video",
+            "--data",
+            str(input_video),
+            "--output-dir",
+            str(scene_dir),
+            "--matching-method",
+            "sequential",
+            "--num-frames-target",
+            str(num_frames_target),
+            "--no-gpu",
+        ],
+        log,
+        "ns-process-data video",
+    )
+
+    run_logged_command(
+        [
+            "ns-train",
+            "splatfacto",
+            "--data",
+            str(scene_dir),
+            "--output-dir",
+            str(output_dir),
+            "--max-num-iterations",
+            str(max_iterations),
+            "--steps-per-save",
+            str(max_iterations),
+            "--steps-per-eval-image",
+            str(max_iterations),
+            "--steps-per-eval-all-images",
+            str(max_iterations),
+            "--vis",
+            "tensorboard",
+        ],
+        log,
+        "ns-train splatfacto",
+    )
+    config_candidates = sorted(output_dir.glob("**/config.yml"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not config_candidates:
+        config_candidates = sorted(root.glob("**/config.yml"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not config_candidates:
+        raise RuntimeError("Nerfstudio did not produce config.yml")
+
+    run_logged_command(
+        [
+            "ns-export",
+            "gaussian-splat",
+            "--load-config",
+            str(config_candidates[0]),
+            "--output-dir",
+            str(exported_dir),
+        ],
+        log,
+        "ns-export gaussian-splat",
+    )
+    candidates = sorted(exported_dir.glob("*.ply"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not candidates:
+        raise RuntimeError("Nerfstudio did not export a PLY splat")
+
+    out = splat_dir / "room_splat.ply"
+    candidates[0].replace(out)
+    log["steps"].append(
+        {
+            "name": "splatfacto_total",
+            "status": "done",
+            "num_frames_target": num_frames_target,
+            "max_iterations": max_iterations,
+            "duration_seconds": round(time.time() - started_at, 2),
+        }
+    )
+    return out
+
+
+def run_da3_gaussian_splat(input_video: Path, root: Path, splat_dir: Path, log: dict[str, Any]) -> Path:
+    import torch
+    from depth_anything_3.api import DepthAnything3
+
+    frames_dir = root / "da3_frames"
+    export_dir = root / "da3_export"
+    frames_dir.mkdir(exist_ok=True)
+    export_dir.mkdir(exist_ok=True)
+
+    num_frames_target = int(os.environ.get("ROOMFLY_DA3_NUM_FRAMES", "32"))
+    model_id = os.environ.get("ROOMFLY_DA3_MODEL_ID", "depth-anything/DA3NESTED-GIANT-LARGE-1.1")
+    use_ray_pose = os.environ.get("ROOMFLY_DA3_USE_RAY_POSE", "0") == "1"
+    started_at = time.time()
+
+    extract_da3_frames(input_video, frames_dir, num_frames_target, log)
+    frames = sorted(frames_dir.glob("*.jpg"))
+    if len(frames) < 2:
+        raise RuntimeError("DA3 requires at least two extracted frames")
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type != "cuda":
+        raise RuntimeError("DA3 Gaussian export requires a Modal GPU runtime")
+
+    model_started_at = time.time()
+    model = DepthAnything3.from_pretrained(model_id).to(device=device)
+    prediction = model.inference(
+        [str(frame) for frame in frames],
+        export_dir=str(export_dir),
+        export_format="gs_ply",
+        use_ray_pose=use_ray_pose,
+    )
+    log["steps"].append(
+        {
+            "name": "da3_gs_inference",
+            "status": "done",
+            "model": model_id,
+            "frames": len(frames),
+            "device": str(device),
+            "use_ray_pose": use_ray_pose,
+            "duration_seconds": round(time.time() - model_started_at, 2),
+            "depth_shape": list(getattr(prediction.depth, "shape", [])),
+        }
+    )
+
+    candidates = sorted(export_dir.glob("**/*.ply"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not candidates:
+        raise RuntimeError("DA3 did not export a Gaussian PLY")
+
+    out = splat_dir / "room_splat.ply"
+    candidates[0].replace(out)
+    log["steps"].append(
+        {
+            "name": "da3_gs_total",
+            "status": "done",
+            "model": model_id,
+            "frames": len(frames),
+            "duration_seconds": round(time.time() - started_at, 2),
+        }
+    )
+    return out
+
+
+def run_da3_geometry_ply(input_video: Path, root: Path, splat_dir: Path, log: dict[str, Any]) -> Path:
+    import torch
+    from depth_anything_3.api import DepthAnything3
+
+    frames_dir = root / "da3_frames"
+    export_dir = root / "da3_export"
+    frames_dir.mkdir(exist_ok=True)
+    export_dir.mkdir(exist_ok=True)
+
+    num_frames_target = int(os.environ.get("ROOMFLY_DA3_NUM_FRAMES", "16"))
+    model_id = os.environ.get("ROOMFLY_DA3_MODEL_ID", "depth-anything/DA3NESTED-GIANT-LARGE-1.1")
+    started_at = time.time()
+
+    extract_da3_frames(input_video, frames_dir, num_frames_target, log)
+    frames = sorted(frames_dir.glob("*.jpg"))
+    if len(frames) < 2:
+        raise RuntimeError("DA3 requires at least two extracted frames")
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type != "cuda":
+        raise RuntimeError("DA3 requires a Modal GPU runtime")
+
+    model_started_at = time.time()
+    model = DepthAnything3.from_pretrained(model_id).to(device=device)
+    prediction = model.inference(
+        [str(frame) for frame in frames],
+        export_dir=str(export_dir),
+        export_format="ply",
+    )
+    log["steps"].append(
+        {
+            "name": "da3_ply_inference",
+            "status": "done",
+            "model": model_id,
+            "frames": len(frames),
+            "device": str(device),
+            "duration_seconds": round(time.time() - model_started_at, 2),
+            "depth_shape": list(getattr(prediction.depth, "shape", [])),
+            "conf_shape": list(getattr(prediction.conf, "shape", [])),
+            "extrinsics_shape": list(getattr(prediction.extrinsics, "shape", [])),
+            "intrinsics_shape": list(getattr(prediction.intrinsics, "shape", [])),
+        }
+    )
+
+    candidates = sorted(export_dir.glob("**/*.ply"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not candidates:
+        raise RuntimeError("DA3 did not export a PLY")
+
+    out = splat_dir / "room_splat.ply"
+    candidates[0].replace(out)
+    log["steps"].append(
+        {
+            "name": "da3_ply_total",
+            "status": "done",
+            "model": model_id,
+            "frames": len(frames),
+            "duration_seconds": round(time.time() - started_at, 2),
+        }
+    )
+    return out
+
+
+def extract_da3_frames(input_video: Path, frames_dir: Path, num_frames_target: int, log: dict[str, Any]) -> None:
+    run_logged_command(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(input_video),
+            "-vf",
+            da3_frame_filter(input_video, num_frames_target),
+            "-fps_mode",
+            "vfr",
+            "-frames:v",
+            str(num_frames_target),
+            str(frames_dir / "frame_%04d.jpg"),
+        ],
+        log,
+        "extract_da3_frames",
+    )
+
+
+def video_frame_interval(input_video: Path, target_frames: int) -> int:
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-count_packets",
+            "-show_entries",
+            "stream=nb_read_packets",
+            "-of",
+            "csv=p=0",
+            str(input_video),
+        ],
+        text=True,
+        capture_output=True,
+    )
+    try:
+        frame_count = int(result.stdout.strip())
+    except ValueError:
+        frame_count = target_frames
+    return max(1, math.floor(frame_count / max(1, target_frames)))
+
+
+def da3_frame_filter(input_video: Path, target_frames: int) -> str:
+    interval = max(1, video_frame_interval(input_video, target_frames))
+    return f"select=not(mod(n\\,{interval})),scale=w='min(960,iw)':h=-2"
+
+
+def run_logged_command(command: list[str], log: dict[str, Any], name: str) -> None:
+    started_at = time.time()
+    env = os.environ.copy()
+    env.setdefault("QT_QPA_PLATFORM", "offscreen")
+    runtime_dir = Path("/tmp/roomfly-xdg-runtime")
+    runtime_dir.mkdir(mode=0o700, exist_ok=True)
+    runtime_dir.chmod(0o700)
+    env.setdefault("XDG_RUNTIME_DIR", str(runtime_dir))
+    result = subprocess.run(command, text=True, capture_output=True, env=env)
+    stdout_tail = tail_text(result.stdout)
+    stderr_tail = tail_text(result.stderr)
+    step = {
+        "name": name,
+        "command": command,
+        "status": "done" if result.returncode == 0 else "failed",
+        "returncode": result.returncode,
+        "duration_seconds": round(time.time() - started_at, 2),
+        "stdout_tail": stdout_tail,
+        "stderr_tail": stderr_tail,
+    }
+    log["steps"].append(step)
+    if result.returncode != 0:
+        detail = stderr_tail or stdout_tail or f"exit code {result.returncode}"
+        raise RuntimeError(f"{name} failed: {detail}")
+
+
+def tail_text(value: str, limit: int = 4000) -> str:
+    value = value.strip()
+    if len(value) <= limit:
+        return value
+    return value[-limit:]
+
+
+def convert_gaussian_ply_to_splat(ply_path: Path, splat_path: Path) -> None:
+    import struct
+
+    np = lazy_np()
+    vertices = read_gaussian_ply_vertices(ply_path)
+    if not vertices:
+        raise RuntimeError("Gaussian PLY contains no vertices")
+
+    rows: list[tuple[float, bytes]] = []
+    for vertex in vertices:
+        x = float(vertex.get("x", 0.0))
+        y = float(vertex.get("y", 0.0))
+        z = float(vertex.get("z", 0.0))
+        scale = [
+            float(np.exp(float(vertex.get("scale_0", -5.0)))),
+            float(np.exp(float(vertex.get("scale_1", -5.0)))),
+            float(np.exp(float(vertex.get("scale_2", -5.0)))),
+        ]
+        opacity = sigmoid(float(vertex.get("opacity", 0.0)))
+        red, green, blue = gaussian_rgb(vertex)
+        rgba = bytes([red, green, blue, int(np.clip(opacity * 255.0, 0, 255))])
+        rotation = gaussian_rotation(vertex)
+        rotation_bytes = bytes([int(np.clip((component * 128.0) + 128.0, 0, 255)) for component in rotation])
+        row = struct.pack("<ffffff", x, y, z, scale[0], scale[1], scale[2]) + rgba + rotation_bytes
+        importance = float(np.prod(scale) * opacity)
+        rows.append((importance, row))
+
+    rows.sort(key=lambda item: item[0], reverse=True)
+    splat_path.write_bytes(b"".join(row for _, row in rows))
+
+
+def read_gaussian_ply_vertices(ply_path: Path) -> list[dict[str, float]]:
+    try:
+        from plyfile import PlyData
+
+        ply = PlyData.read(str(ply_path))
+        vertex_data = ply["vertex"].data
+        names = vertex_data.dtype.names or ()
+        return [
+            {name: float(row[name]) for name in names}
+            for row in vertex_data
+        ]
+    except ImportError:
+        return read_ascii_ply_vertices(ply_path)
+
+
+def read_ascii_ply_vertices(ply_path: Path) -> list[dict[str, float]]:
+    properties: list[str] = []
+    vertices: list[dict[str, float]] = []
+    with ply_path.open("r", encoding="utf-8") as file:
+        in_vertex = False
+        for line in file:
+            stripped = line.strip()
+            if stripped.startswith("element vertex"):
+                in_vertex = True
+                continue
+            if in_vertex and stripped.startswith("property"):
+                parts = stripped.split()
+                properties.append(parts[-1])
+                continue
+            if stripped == "end_header":
+                break
+        for line in file:
+            values = line.split()
+            if len(values) < len(properties):
+                continue
+            vertices.append({name: float(value) for name, value in zip(properties, values, strict=False)})
+    return vertices
+
+
+def sigmoid(value: float) -> float:
+    if value >= 0:
+        z = math.exp(-value)
+        return 1.0 / (1.0 + z)
+    z = math.exp(value)
+    return z / (1.0 + z)
+
+
+def gaussian_rgb(vertex: dict[str, float]) -> tuple[int, int, int]:
+    np = lazy_np()
+    sh_c0 = 0.28209479177387814
+    if all(name in vertex for name in ("f_dc_0", "f_dc_1", "f_dc_2")):
+        rgb = [
+            (float(vertex[f"f_dc_{index}"]) * sh_c0 + 0.5) * 255.0
+            for index in range(3)
+        ]
+    else:
+        rgb = [
+            float(vertex.get("red", vertex.get("r", 255.0))),
+            float(vertex.get("green", vertex.get("g", 255.0))),
+            float(vertex.get("blue", vertex.get("b", 255.0))),
+        ]
+    return tuple(int(np.clip(channel, 0, 255)) for channel in rgb)
+
+
+def gaussian_rotation(vertex: dict[str, float]) -> list[float]:
+    np = lazy_np()
+    rotation = np.asarray(
+        [
+            float(vertex.get("rot_0", 1.0)),
+            float(vertex.get("rot_1", 0.0)),
+            float(vertex.get("rot_2", 0.0)),
+            float(vertex.get("rot_3", 0.0)),
+        ],
+        dtype=np.float32,
+    )
+    norm = float(np.linalg.norm(rotation))
+    if not np.isfinite(norm) or norm <= 0:
+        return [1.0, 0.0, 0.0, 0.0]
+    return (rotation / norm).tolist()
+
+
 def store_asset(
     storage_backend: str,
     s3,
@@ -950,7 +1499,7 @@ def upload_asset(s3, bucket: str, output_prefix: str, local_path: Path, relative
 
 def guess_content_type(path: Path) -> str:
     suffix = path.suffix.lower()
-    if suffix == ".ply":
+    if suffix in {".ply", ".splat"}:
         return "application/octet-stream"
     if suffix in {".glb", ".gltf"}:
         return "model/gltf-binary" if suffix == ".glb" else "model/gltf+json"

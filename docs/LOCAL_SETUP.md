@@ -58,7 +58,7 @@ password: minioadmin
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/roomfly
 API_BIND_ADDR=127.0.0.1:8080
 API_PUBLIC_URL=http://localhost:8080
-WEB_ORIGIN=http://localhost:3000
+WEB_ORIGIN=http://localhost:3000,http://localhost:3001
 
 STORAGE_BACKEND=modal
 LOCAL_DATA_DIR=../../data
@@ -70,12 +70,13 @@ S3_ACCESS_KEY_ID=minioadmin
 S3_SECRET_ACCESS_KEY=minioadmin
 
 MODAL_PROCESS_URL=https://<workspace>--roomfly-mvp-process-scene.modal.run
+MODAL_SPLAT_URL=https://<workspace>--roomfly-mvp-generate-splat.modal.run
 MODAL_ASSET_URL=https://<workspace>--roomfly-mvp-get-asset.modal.run
 MODAL_AUTH_TOKEN=
 MAX_UPLOAD_BYTES=157286400
 ```
 
-You must replace both Modal URLs after deploying or serving Modal.
+You must replace the Modal URLs after deploying or serving Modal.
 
 ## Frontend Configuration
 

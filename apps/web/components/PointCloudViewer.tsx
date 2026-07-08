@@ -27,7 +27,7 @@ export function PointCloudViewer({ url, glbUrl, activeHotspot }: Props) {
   return (
     <div className="relative h-full">
       <Canvas camera={{ position: [0, 1.6, 4], fov: 58 }} dpr={[1, 2]}>
-        <color attach="background" args={["#15171a"]} />
+        <color attach="background" args={["#0f1214"]} />
         <ambientLight intensity={0.8} />
         <gridHelper args={[10, 20, "#58605c", "#363b38"]} position={[0, 0, 0]} />
         {showGlb ? (
@@ -35,16 +35,16 @@ export function PointCloudViewer({ url, glbUrl, activeHotspot }: Props) {
         ) : url ? (
           <PointCloud url={url} confidence={confidence} frame={frame} upAxis={upAxis} />
         ) : (
-          <PlaceholderRoom />
+          <PlaceholderObject />
         )}
         <CameraHotspotSync hotspot={activeHotspot} />
         <OrbitControls target={[0, 1.2, 0]} maxPolarAngle={Math.PI * 0.52} />
       </Canvas>
 
       {url ? (
-        <div className="absolute bottom-4 left-4 flex max-w-[calc(100%-7rem)] flex-wrap items-center gap-3 rounded border border-white/20 bg-ink/85 px-3 py-2 text-xs text-white shadow">
+        <div className="absolute bottom-4 left-4 flex max-w-[calc(100%-7rem)] flex-wrap items-center gap-3 border border-white/20 bg-obsidian/88 px-3 py-2 text-xs text-white shadow">
           {glbUrl ? (
-            <div className="inline-flex overflow-hidden rounded border border-white/30">
+            <div className="inline-flex overflow-hidden border border-white/30">
               <button
                 type="button"
                 onClick={() => setSource("ply")}
@@ -87,10 +87,10 @@ export function PointCloudViewer({ url, glbUrl, activeHotspot }: Props) {
                 setFrame(value === "" ? "all" : Number(value));
               }}
               placeholder="All"
-              className="h-7 w-16 rounded border border-white/30 bg-transparent px-2 text-white placeholder:text-white/70 disabled:opacity-40"
+              className="h-7 w-16 border border-white/30 bg-transparent px-2 text-white placeholder:text-white/70 disabled:opacity-40"
             />
           </label>
-          <div className="inline-flex items-center overflow-hidden rounded border border-white/30">
+          <div className="inline-flex items-center overflow-hidden border border-white/30">
             {(["y", "z", "x"] as const).map((axis) => (
               <button
                 key={axis}
@@ -234,19 +234,20 @@ function centerGeometryOnFloor(geometry: THREE.BufferGeometry) {
   geometry.translate(-center.x, -box.min.y, -center.z);
 }
 
-function PlaceholderRoom() {
+function PlaceholderObject() {
   const geometry = useMemo(() => {
     const positions: number[] = [];
     const colors: number[] = [];
     const color = new THREE.Color();
 
-    for (let i = 0; i < 2800; i += 1) {
-      const wall = i % 4;
-      const x = wall < 2 ? -2 + Math.random() * 4 : wall === 2 ? -2 : 2;
-      const z = wall < 2 ? (wall === 0 ? -2 : 2) : -2 + Math.random() * 4;
-      const y = Math.random() * 2.6;
+    for (let i = 0; i < 3600; i += 1) {
+      const t = Math.random() * Math.PI * 2;
+      const y = -0.9 + Math.random() * 1.9;
+      const radius = 0.34 + Math.sin((y + 0.85) * 3) * 0.16 + Math.random() * 0.09;
+      const x = Math.cos(t) * radius * (y > 0.45 ? 0.55 : 1);
+      const z = Math.sin(t) * radius * (y > 0.45 ? 0.55 : 1);
       positions.push(x, y, z);
-      color.setHSL(0.09 + Math.random() * 0.05, 0.18, 0.55 + Math.random() * 0.18);
+      color.setHSL(0.47 + Math.random() * 0.12, 0.65, 0.48 + Math.random() * 0.22);
       colors.push(color.r, color.g, color.b);
     }
 

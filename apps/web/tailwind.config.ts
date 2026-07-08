@@ -10,9 +10,11 @@ const config: Config = {
     extend: {
       colors: {
         ink: "#15171a",
-        panel: "#f4f1eb",
+        obsidian: "#0f1214",
+        porcelain: "#f7f8f5",
+        panel: "#eef2ee",
         line: "#d8d4ca",
-        accent: "#247b6d",
+        accent: "#128277",
         warn: "#a45a24"
       }
     }

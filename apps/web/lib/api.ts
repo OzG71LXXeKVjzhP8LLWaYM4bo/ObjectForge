@@ -2,6 +2,12 @@ import type { HotspotsPayload, SceneResult } from "./sceneTypes";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8080";
 
+type AuthToken = string | null | undefined;
+
+function authHeaders(token?: AuthToken): HeadersInit {
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   try {
     return await fetch(`${API_BASE_URL}${path}`, init);
@@ -25,28 +31,40 @@ async function parseJson<T>(response: Response): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export async function uploadSceneVideo(file: File): Promise<SceneResult> {
+export async function uploadSceneVideo(file: File, token?: AuthToken): Promise<SceneResult> {
   const formData = new FormData();
   formData.append("video", file);
 
   const response = await apiFetch("/api/scenes", {
     method: "POST",
+    headers: authHeaders(token),
     body: formData
   });
 
   return parseJson<SceneResult>(response);
 }
 
-export async function startSceneProcessing(sceneId: string): Promise<SceneResult> {
+export async function startSceneProcessing(sceneId: string, token?: AuthToken): Promise<SceneResult> {
   const response = await apiFetch(`/api/scenes/${sceneId}/process`, {
-    method: "POST"
+    method: "POST",
+    headers: authHeaders(token)
   });
 
   return parseJson<SceneResult>(response);
 }
 
-export async function getScene(sceneId: string): Promise<SceneResult> {
+export async function generateSceneSplat(sceneId: string, token?: AuthToken): Promise<SceneResult> {
+  const response = await apiFetch(`/api/scenes/${sceneId}/splat`, {
+    method: "POST",
+    headers: authHeaders(token)
+  });
+
+  return parseJson<SceneResult>(response);
+}
+
+export async function getScene(sceneId: string, token?: AuthToken): Promise<SceneResult> {
   const response = await apiFetch(`/api/scenes/${sceneId}`, {
+    headers: authHeaders(token),
     cache: "no-store"
   });
 

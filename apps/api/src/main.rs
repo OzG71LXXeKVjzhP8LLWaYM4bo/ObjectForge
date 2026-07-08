@@ -1,4 +1,11 @@
-use std::{env, fs, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    env, fs,
+    net::SocketAddr,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
 use anyhow::Context;
 use aws_config::BehaviorVersion;
@@ -16,7 +23,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use base64::{engine::general_purpose::STANDARD as BASE64, engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -32,20 +39,75 @@ struct AppState {
     s3: Option<S3Client>,
     http: HttpClient,
     config: Arc<AppConfig>,
+    rate_limiter: Arc<Mutex<RateLimiter>>,
 }
 
 #[derive(Clone)]
 struct AppConfig {
     api_bind_addr: SocketAddr,
     api_public_url: String,
-    web_origin: String,
+    web_origins: Vec<String>,
     storage_backend: StorageBackend,
     local_data_dir: PathBuf,
     s3_bucket: Option<String>,
     modal_process_url: String,
+    modal_splat_url: Option<String>,
     modal_asset_url: Option<String>,
     modal_auth_token: Option<String>,
+    require_auth: bool,
+    rate_limit_window: Duration,
+    upload_limit: usize,
+    process_limit: usize,
+    read_limit: usize,
+    asset_limit: usize,
     max_upload_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RateClass {
+    Upload,
+    Process,
+    Read,
+    Asset,
+}
+
+#[derive(Debug)]
+struct RateLimit {
+    retry_after: u64,
+}
+
+#[derive(Default)]
+struct RateLimiter {
+    buckets: HashMap<String, RateBucket>,
+}
+
+struct RateBucket {
+    started_at: Instant,
+    count: usize,
+}
+
+impl RateLimiter {
+    fn check(&mut self, key: String, limit: usize, window: Duration) -> Result<(), RateLimit> {
+        let now = Instant::now();
+        let bucket = self.buckets.entry(key).or_insert(RateBucket {
+            started_at: now,
+            count: 0,
+        });
+
+        if now.duration_since(bucket.started_at) >= window {
+            bucket.started_at = now;
+            bucket.count = 0;
+        }
+
+        if bucket.count >= limit {
+            let elapsed = now.duration_since(bucket.started_at);
+            let retry_after = window.saturating_sub(elapsed).as_secs().max(1);
+            return Err(RateLimit { retry_after });
+        }
+
+        bucket.count += 1;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,7 +142,7 @@ struct SceneResult {
     error: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[serde(rename_all = "lowercase")]
 #[sqlx(type_name = "text")]
 enum SceneStatus {
@@ -135,6 +197,8 @@ struct SceneAssets {
     #[serde(skip_serializing_if = "Option::is_none")]
     splat_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    raw_splat_ply_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     floorplan_png_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     floorplan_svg_url: Option<String>,
@@ -171,6 +235,7 @@ struct ModalAssetKeys {
     pointcloud_key: Option<String>,
     pointcloud_glb_key: Option<String>,
     splat_key: Option<String>,
+    raw_splat_ply_key: Option<String>,
     floorplan_png_key: Option<String>,
     floorplan_svg_key: Option<String>,
     floorplan_json_key: Option<String>,
@@ -186,6 +251,10 @@ struct ModalAssetKeys {
 enum ApiError {
     #[error("{0}")]
     BadRequest(String),
+    #[error("authentication required")]
+    Unauthorized,
+    #[error("rate limit exceeded; retry after {0} seconds")]
+    RateLimited(u64),
     #[error("scene not found")]
     NotFound,
     #[error("storage error: {0}")]
@@ -198,8 +267,10 @@ enum ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let status = match self {
+        let status = match &self {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
+            Self::Unauthorized => StatusCode::UNAUTHORIZED,
+            Self::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::Storage(_) | Self::Database(_) | Self::Upstream(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
@@ -212,6 +283,88 @@ impl IntoResponse for ApiError {
 
         (status, body).into_response()
     }
+}
+
+fn enforce_request(
+    state: &AppState,
+    headers: &HeaderMap,
+    class: RateClass,
+    auth_required_for_endpoint: bool,
+) -> Result<(), ApiError> {
+    let identity = request_identity(headers);
+    if state.config.require_auth && auth_required_for_endpoint && identity.auth_subject.is_none() {
+        return Err(ApiError::Unauthorized);
+    }
+
+    let limit = match class {
+        RateClass::Upload => state.config.upload_limit,
+        RateClass::Process => state.config.process_limit,
+        RateClass::Read => state.config.read_limit,
+        RateClass::Asset => state.config.asset_limit,
+    };
+
+    let key = format!("{}:{:?}:{}", identity.rate_key, class, state.config.rate_limit_window.as_secs());
+    let mut limiter = state
+        .rate_limiter
+        .lock()
+        .map_err(|_| ApiError::Storage("rate limiter lock poisoned".to_string()))?;
+
+    limiter
+        .check(key, limit, state.config.rate_limit_window)
+        .map_err(|err| ApiError::RateLimited(err.retry_after))
+}
+
+struct RequestIdentity {
+    auth_subject: Option<String>,
+    rate_key: String,
+}
+
+fn request_identity(headers: &HeaderMap) -> RequestIdentity {
+    let auth_subject = bearer_token(headers)
+        .and_then(|token| clerk_subject_from_jwt(token).or_else(|| Some(format!("token:{}", token_prefix(token)))));
+    let forwarded_for = headers
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let real_ip = headers
+        .get("x-real-ip")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty());
+
+    let rate_key = auth_subject
+        .clone()
+        .unwrap_or_else(|| format!("ip:{}", forwarded_for.or(real_ip).unwrap_or("unknown")));
+
+    RequestIdentity {
+        auth_subject,
+        rate_key,
+    }
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn clerk_subject_from_jwt(token: &str) -> Option<String> {
+    let payload = token.split('.').nth(1)?;
+    let decoded = URL_SAFE_NO_PAD.decode(payload).ok()?;
+    let value: Value = serde_json::from_slice(&decoded).ok()?;
+    value
+        .get("sub")
+        .and_then(Value::as_str)
+        .filter(|subject| !subject.is_empty())
+        .map(|subject| format!("clerk:{subject}"))
+}
+
+fn token_prefix(token: &str) -> String {
+    token.chars().take(16).collect()
 }
 
 #[tokio::main]
@@ -241,20 +394,26 @@ async fn main() -> anyhow::Result<()> {
         s3,
         http: HttpClient::new(),
         config: config.clone(),
+        rate_limiter: Arc::new(Mutex::new(RateLimiter::default())),
     };
 
-    let cors_origin = config.web_origin.parse::<HeaderValue>()?;
+    let cors_origins = config
+        .web_origins
+        .iter()
+        .map(|origin| origin.parse::<HeaderValue>())
+        .collect::<Result<Vec<_>, _>>()?;
     let max_upload_bytes = config.max_upload_bytes;
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/api/scenes", post(create_scene))
         .route("/api/scenes/{scene_id}", get(get_scene))
         .route("/api/scenes/{scene_id}/process", post(process_scene))
+        .route("/api/scenes/{scene_id}/splat", post(generate_scene_splat))
         .route("/api/scenes/{scene_id}/assets/{*asset_name}", get(get_asset))
         .layer(DefaultBodyLimit::max(max_upload_bytes))
         .layer(
             CorsLayer::new()
-                .allow_origin(cors_origin)
+                .allow_origin(cors_origins)
                 .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
                 .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]),
         )
@@ -278,20 +437,47 @@ fn load_config() -> anyhow::Result<AppConfig> {
     Ok(AppConfig {
         api_bind_addr,
         api_public_url: env::var("API_PUBLIC_URL").unwrap_or_else(|_| "http://localhost:8080".to_string()),
-        web_origin: env::var("WEB_ORIGIN").unwrap_or_else(|_| "http://localhost:3000".to_string()),
+        web_origins: env::var("WEB_ORIGIN")
+            .unwrap_or_else(|_| "http://localhost:3000,http://localhost:3001".to_string())
+            .split(',')
+            .map(str::trim)
+            .filter(|origin| !origin.is_empty())
+            .map(ToOwned::to_owned)
+            .collect(),
         storage_backend: StorageBackend::from_env(),
         local_data_dir: env::var("LOCAL_DATA_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("../../data")),
         s3_bucket: env::var("S3_BUCKET").ok().filter(|value| !value.is_empty()),
         modal_process_url: env::var("MODAL_PROCESS_URL").context("MODAL_PROCESS_URL is required")?,
+        modal_splat_url: env::var("MODAL_SPLAT_URL").ok().filter(|value| !value.is_empty()),
         modal_asset_url: env::var("MODAL_ASSET_URL").ok().filter(|value| !value.is_empty()),
         modal_auth_token: env::var("MODAL_AUTH_TOKEN").ok().filter(|value| !value.is_empty()),
+        require_auth: env_bool("REQUIRE_AUTH", true),
+        rate_limit_window: Duration::from_secs(env_usize("RATE_LIMIT_WINDOW_SECONDS", 60) as u64),
+        upload_limit: env_usize("RATE_LIMIT_UPLOADS_PER_WINDOW", 3),
+        process_limit: env_usize("RATE_LIMIT_PROCESS_PER_WINDOW", 4),
+        read_limit: env_usize("RATE_LIMIT_READS_PER_WINDOW", 90),
+        asset_limit: env_usize("RATE_LIMIT_ASSETS_PER_WINDOW", 240),
         max_upload_bytes: env::var("MAX_UPLOAD_BYTES")
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(500 * 1024 * 1024),
     })
+}
+
+fn env_bool(name: &str, default: bool) -> bool {
+    env::var(name)
+        .ok()
+        .map(|value| matches!(value.to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(default)
+}
+
+fn env_usize(name: &str, default: usize) -> usize {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
 }
 
 async fn build_s3_client() -> anyhow::Result<S3Client> {
@@ -347,8 +533,11 @@ async fn healthz() -> &'static str {
 
 async fn create_scene(
     State(state): State<AppState>,
+    headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Result<Json<SceneResult>, ApiError> {
+    enforce_request(&state, &headers, RateClass::Upload, true)?;
+
     let mut video_bytes: Option<Vec<u8>> = None;
     let mut file_name = "input.mp4".to_string();
 
@@ -428,15 +617,20 @@ async fn create_scene(
 
 async fn get_scene(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(scene_id): Path<Uuid>,
 ) -> Result<Json<SceneResult>, ApiError> {
+    enforce_request(&state, &headers, RateClass::Read, true)?;
     Ok(Json(scene_result_from_db(&state, scene_id).await?))
 }
 
 async fn process_scene(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(scene_id): Path<Uuid>,
 ) -> Result<Json<SceneResult>, ApiError> {
+    enforce_request(&state, &headers, RateClass::Process, true)?;
+
     let row = sqlx::query("select input_video_key, output_prefix from scenes where id = $1")
         .bind(scene_id)
         .fetch_optional(&state.db)
@@ -534,10 +728,138 @@ async fn process_scene(
     Ok(Json(scene_result_from_db(&state, scene_id).await?))
 }
 
+async fn generate_scene_splat(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(scene_id): Path<Uuid>,
+) -> Result<Json<SceneResult>, ApiError> {
+    enforce_request(&state, &headers, RateClass::Process, true)?;
+
+    let row = sqlx::query("select status, input_video_key, output_prefix, assets, warnings from scenes where id = $1")
+        .bind(scene_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+
+    let status: String = row.try_get("status")?;
+    if parse_status(&status) != SceneStatus::Done {
+        return Err(ApiError::BadRequest(
+            "splat generation requires a completed scene".to_string(),
+        ));
+    }
+
+    let modal_splat_url = match &state.config.modal_splat_url {
+        Some(url) => url.clone(),
+        None => {
+            append_scene_warning(&state.db, scene_id, "MODAL_SPLAT_URL is not configured").await?;
+            return Ok(Json(scene_result_from_db(&state, scene_id).await?));
+        }
+    };
+    let input_video_key: String = row.try_get("input_video_key")?;
+    let output_prefix: String = row.try_get("output_prefix")?;
+    let existing_assets: Value = row.try_get("assets")?;
+    let existing_warnings: Value = row.try_get("warnings")?;
+
+    let payload = match state.config.storage_backend {
+        StorageBackend::S3 => {
+            let bucket = state
+                .config
+                .s3_bucket
+                .as_ref()
+                .ok_or_else(|| ApiError::Storage("S3_BUCKET is required for s3 storage".to_string()))?;
+            json!({
+                "storage_backend": "s3",
+                "scene_id": scene_id.to_string(),
+                "input_video_key": input_video_key,
+                "output_prefix": output_prefix,
+                "s3_bucket": bucket
+            })
+        }
+        StorageBackend::Modal => {
+            let input_path = local_input_path_from_key(&state.config, scene_id, &input_video_key);
+            let bytes = fs::read(input_path).map_err(|err| ApiError::Storage(err.to_string()))?;
+            json!({
+                "storage_backend": "modal",
+                "scene_id": scene_id.to_string(),
+                "video_bytes_base64": BASE64.encode(bytes),
+                "input_video_key": input_video_key,
+                "output_prefix": output_prefix
+            })
+        }
+    };
+
+    let mut request = state.http.post(&modal_splat_url).json(&payload);
+    if let Some(token) = &state.config.modal_auth_token {
+        request = request.bearer_auth(token);
+    }
+
+    let response = match request.send().await {
+        Ok(response) => response,
+        Err(err) => {
+            error!("modal splat request failed: {err}");
+            append_scene_warning(&state.db, scene_id, &format!("Splat generation failed: {err}")).await?;
+            return Ok(Json(scene_result_from_db(&state, scene_id).await?));
+        }
+    };
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        append_scene_warning(
+            &state.db,
+            scene_id,
+            &format!("Splat generation failed with HTTP {status}: {body}"),
+        )
+        .await?;
+        return Ok(Json(scene_result_from_db(&state, scene_id).await?));
+    }
+
+    let modal_result = match response.json::<ModalSceneResult>().await {
+        Ok(result) => result,
+        Err(err) => {
+            append_scene_warning(&state.db, scene_id, &format!("Splat response was invalid: {err}")).await?;
+            return Ok(Json(scene_result_from_db(&state, scene_id).await?));
+        }
+    };
+    if modal_result.scene_id != scene_id.to_string() {
+        append_scene_warning(&state.db, scene_id, "Splat response referenced a different scene").await?;
+        return Ok(Json(scene_result_from_db(&state, scene_id).await?));
+    }
+    if modal_result.assets.splat_key.is_none() {
+        append_scene_warning(&state.db, scene_id, "Splat generation completed without a splat asset").await?;
+        return Ok(Json(scene_result_from_db(&state, scene_id).await?));
+    }
+
+    let mut warnings: Vec<String> = serde_json::from_value(existing_warnings).unwrap_or_default();
+    warnings.extend(modal_result.warnings);
+    let merged_assets = merge_asset_values(existing_assets, serde_json::to_value(modal_result.assets).unwrap_or_else(|_| json!({})));
+
+    update_scene_status(
+        &state.db,
+        scene_id,
+        SceneStatus::Done,
+        Some(VisualMode::Splat),
+        Some(warnings),
+        None,
+    )
+    .await?;
+
+    sqlx::query("update scenes set assets = $2, updated_at = now() where id = $1")
+        .bind(scene_id)
+        .bind(merged_assets)
+        .execute(&state.db)
+        .await?;
+
+    Ok(Json(scene_result_from_db(&state, scene_id).await?))
+}
+
 async fn get_asset(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path((scene_id, asset_name)): Path<(Uuid, String)>,
 ) -> Result<Response, ApiError> {
+    enforce_request(&state, &headers, RateClass::Asset, false)?;
+
     if state.config.storage_backend == StorageBackend::Modal {
         return get_modal_asset(state, scene_id, asset_name).await;
     }
@@ -680,6 +1002,7 @@ fn asset_urls(state: &AppState, scene_id: Uuid, keys: ModalAssetKeys) -> SceneAs
         pointcloud_url: keys.pointcloud_key.as_deref().map(|key| asset_url(state, scene_id, key)),
         pointcloud_glb_url: keys.pointcloud_glb_key.as_deref().map(|key| asset_url(state, scene_id, key)),
         splat_url: keys.splat_key.as_deref().map(|key| asset_url(state, scene_id, key)),
+        raw_splat_ply_url: keys.raw_splat_ply_key.as_deref().map(|key| asset_url(state, scene_id, key)),
         floorplan_png_url: keys.floorplan_png_key.as_deref().map(|key| asset_url(state, scene_id, key)),
         floorplan_svg_url: keys.floorplan_svg_key.as_deref().map(|key| asset_url(state, scene_id, key)),
         floorplan_json_url: keys.floorplan_json_key.as_deref().map(|key| asset_url(state, scene_id, key)),
@@ -690,6 +1013,23 @@ fn asset_urls(state: &AppState, scene_id: Uuid, keys: ModalAssetKeys) -> SceneAs
         confidence_preview_url: keys.confidence_preview_key.as_deref().map(|key| asset_url(state, scene_id, key)),
         processing_log_url: keys.processing_log_key.as_deref().map(|key| asset_url(state, scene_id, key)),
     }
+}
+
+fn merge_asset_values(mut existing: Value, incoming: Value) -> Value {
+    let Some(existing_object) = existing.as_object_mut() else {
+        return incoming;
+    };
+    let Some(incoming_object) = incoming.as_object() else {
+        return existing;
+    };
+
+    for (key, value) in incoming_object {
+        if !value.is_null() {
+            existing_object.insert(key.clone(), value.clone());
+        }
+    }
+
+    existing
 }
 
 fn asset_url(state: &AppState, scene_id: Uuid, key: &str) -> String {
@@ -751,6 +1091,29 @@ async fn update_scene_status(
     .bind(error)
     .execute(db)
     .await?;
+
+    Ok(())
+}
+
+async fn append_scene_warning(db: &PgPool, scene_id: Uuid, warning: &str) -> Result<(), sqlx::Error> {
+    let row = sqlx::query("select warnings from scenes where id = $1")
+        .bind(scene_id)
+        .fetch_optional(db)
+        .await?;
+    let mut warnings: Vec<String> = match row {
+        Some(row) => {
+            let value: Value = row.try_get("warnings")?;
+            serde_json::from_value(value).unwrap_or_default()
+        }
+        None => return Ok(()),
+    };
+    warnings.push(warning.to_string());
+
+    sqlx::query("update scenes set warnings = $2, updated_at = now() where id = $1")
+        .bind(scene_id)
+        .bind(serde_json::to_value(warnings).unwrap_or_else(|_| json!([])))
+        .execute(db)
+        .await?;
 
     Ok(())
 }

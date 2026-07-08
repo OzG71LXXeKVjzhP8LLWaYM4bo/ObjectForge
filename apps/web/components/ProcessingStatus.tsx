@@ -22,7 +22,7 @@ export function ProcessingStatus({ scene, message }: Props) {
     );
 
   return (
-    <section className="rounded border border-line bg-white p-5 shadow-sm">
+    <section className="border border-line bg-white p-5 shadow-sm">
       <div className="flex items-center gap-3">
         {icon}
         <div>
@@ -55,11 +55,11 @@ export function ProcessingStatus({ scene, message }: Props) {
 function statusLabel(status: SceneResult["status"]) {
   switch (status) {
     case "uploaded":
-      return "Video uploaded. Ready to process.";
+      return "Capture uploaded. Ready to reconstruct.";
     case "processing":
-      return "Modal is processing the room.";
+      return "Reconstructing the object.";
     case "done":
-      return "Scene is ready.";
+      return "Object reconstruction is ready.";
     case "failed":
       return "Processing failed.";
   }
