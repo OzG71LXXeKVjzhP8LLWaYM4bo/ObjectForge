@@ -62,7 +62,7 @@ The current API default caps uploads at 150 MB:
 MAX_UPLOAD_BYTES=157286400
 ```
 
-Modal Volume is fine for a hackathon demo. Use R2/S3 later for durable object storage and better delivery.
+Modal Volume is fine for local development and early product testing. Use R2/S3 later for durable object storage and better delivery.
 
 ## Current Worker Contract
 

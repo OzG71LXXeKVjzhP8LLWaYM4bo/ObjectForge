@@ -1,6 +1,6 @@
 # ObjectForge MVP
 
-ObjectForge is a hackathon prototype that turns short object capture videos into browser-viewable point clouds, GLB assets, capture footprints, and optional Gaussian splats.
+ObjectForge turns short object capture videos into browser-viewable point clouds, GLB assets, capture footprints, and optional Gaussian splats.
 
 The current implementation attempts a real VGGT point-cloud path first, then falls back to a deterministic MVP point cloud if model loading or inference fails:
 
