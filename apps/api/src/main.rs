@@ -369,12 +369,17 @@ fn token_prefix(token: &str) -> String {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    serve().await
+}
+
+pub async fn build_router() -> anyhow::Result<Router> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
         .with_env_filter(
             env::var("RUST_LOG").unwrap_or_else(|_| "roomfly_api=info,tower_http=info".to_string()),
         )
-        .init();
+        .try_init()
+        .ok();
 
     let config = Arc::new(load_config()?);
     let db = PgPoolOptions::new()
@@ -419,6 +424,14 @@ async fn main() -> anyhow::Result<()> {
         )
         .layer(TraceLayer::new_for_http())
         .with_state(state);
+
+    Ok(app)
+}
+
+pub async fn serve() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    let config = Arc::new(load_config()?);
+    let app = build_router().await?;
 
     info!("listening on {}", config.api_bind_addr);
     let listener = tokio::net::TcpListener::bind(config.api_bind_addr).await?;
