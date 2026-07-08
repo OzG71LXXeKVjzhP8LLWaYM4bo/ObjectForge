@@ -32,8 +32,3 @@ path = "src/main.rs"
 [[bin]]
 name = "axum"
 path = "api/axum.rs"
-
-[profile.release]
-codegen-units = 1
-lto = "fat"
-opt-level = 3

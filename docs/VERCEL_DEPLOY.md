@@ -101,6 +101,8 @@ After the web project URL is final, update the API project's `WEB_ORIGIN` to tha
 
 ## Notes
 
+The first Rust deployment can take several minutes because Vercel compiles dependencies from a clean cache. Later builds should be faster.
+
 Vercel's Rust runtime is serverless. The API can use `/tmp` for short-lived upload handoff, but it cannot rely on persistent local disk.
 
 The current `/api/scenes/:scene_id/process` endpoint waits for Modal to finish. If Modal processing takes longer than the Vercel function duration available on your plan, move processing to an async job pattern: mark the scene as `processing`, call Modal asynchronously, and update Postgres from a callback or polling worker.
