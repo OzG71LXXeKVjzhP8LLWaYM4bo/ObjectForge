@@ -1,0 +1,15 @@
+node_modules
+.venv/
+.next
+dist
+target
+.env
+.env.local
+**/.env
+**/.env.local
+*.tsbuildinfo
+*.log
+.DS_Store
+data
+__pycache__
+.modal

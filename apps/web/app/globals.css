@@ -1,0 +1,35 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #ebe7de;
+  color: #15171a;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.viewer-grid {
+  display: grid;
+  grid-template-rows: minmax(420px, 1fr) 260px;
+  min-height: 100vh;
+}
+
+@media (min-width: 900px) {
+  .viewer-grid {
+    grid-template-rows: minmax(520px, 1fr) 300px;
+  }
+}

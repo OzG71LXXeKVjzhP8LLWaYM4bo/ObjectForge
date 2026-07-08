@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://roomfly.local/schemas/scene-result.schema.json",
+  "title": "SceneResult",
+  "type": "object",
+  "required": ["sceneId", "status", "assets", "warnings"],
+  "properties": {
+    "sceneId": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": ["uploaded", "processing", "done", "failed"]
+    },
+    "visualMode": {
+      "type": "string",
+      "enum": ["splat", "pointcloud"]
+    },
+    "assets": {
+      "type": "object",
+      "properties": {
+        "pointcloudUrl": { "type": "string" },
+        "splatUrl": { "type": "string" },
+        "floorplanPngUrl": { "type": "string" },
+        "floorplanSvgUrl": { "type": "string" },
+        "floorplanJsonUrl": { "type": "string" },
+        "camerasJsonUrl": { "type": "string" },
+        "hotspotsJsonUrl": { "type": "string" },
+        "previewsJsonUrl": { "type": "string" },
+        "depthPreviewUrl": { "type": "string" },
+        "confidencePreviewUrl": { "type": "string" },
+        "processingLogUrl": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "error": { "type": "string" }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,13 @@
+modal
+boto3
+fastapi[standard]
+huggingface_hub
+opencv-python
+numpy
+open3d
+Pillow
+scipy
+torch
+torchvision
+trimesh
+git+https://github.com/facebookresearch/vggt.git

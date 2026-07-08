@@ -1,0 +1,17 @@
+{
+  "name": "roomfly-mvp",
+  "private": true,
+  "packageManager": "pnpm@10.26.0",
+  "scripts": {
+    "dev:web": "pnpm --filter @roomfly/web dev",
+    "build:web": "pnpm --filter @roomfly/web build",
+    "lint:web": "pnpm --filter @roomfly/web lint",
+    "typecheck:web": "pnpm --filter @roomfly/web typecheck"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "sharp",
+      "unrs-resolver"
+    ]
+  }
+}
