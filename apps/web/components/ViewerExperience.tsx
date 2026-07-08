@@ -9,7 +9,6 @@ import { FloorplanPanel } from "@/components/FloorplanPanel";
 import { ProcessingStatus } from "@/components/ProcessingStatus";
 import { ObjectViewer } from "@/components/ObjectViewer";
 import { SceneInfoPanel } from "@/components/SceneInfoPanel";
-import { SplatGenerationAction } from "@/components/SplatGenerationAction";
 
 type Props = {
   sceneId: string;
@@ -72,9 +71,6 @@ function AuthenticatedViewer({ sceneId }: Props) {
         <FloorplanPanel scene={scene} />
         <div className="grid border-l border-line md:grid-cols-1">
           <ProcessingStatus scene={scene} />
-          <section className="border-t border-line bg-white p-5">
-            <SplatGenerationAction scene={scene} onSceneChange={setScene} getToken={getToken} />
-          </section>
           <SceneInfoPanel scene={scene} />
         </div>
       </div>

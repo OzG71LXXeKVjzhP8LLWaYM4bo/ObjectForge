@@ -7,7 +7,6 @@ import { useRouter } from "next/navigation";
 import { ObjectHeroScene } from "@/components/ObjectHeroScene";
 import { ProcessingStatus } from "@/components/ProcessingStatus";
 import { ObjectViewer } from "@/components/ObjectViewer";
-import { SplatGenerationAction } from "@/components/SplatGenerationAction";
 import { VideoUpload } from "@/components/VideoUpload";
 import { getScene, startSceneProcessing, uploadSceneVideo } from "@/lib/api";
 import type { SceneResult } from "@/lib/sceneTypes";
@@ -35,7 +34,7 @@ const scopeItems = [
   "Works best with one non-glossy object in steady, even light.",
   "Designed around short capture videos, not room-scale mapping.",
   "Prioritizes point-cloud inspection and clear reconstruction status.",
-  "Gaussian splat generation is available after reconstruction when configured."
+  "Exports viewable point-cloud assets after reconstruction."
 ];
 
 export default function HomePage() {
@@ -283,7 +282,6 @@ function CaptureWorkspace() {
               <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/10 bg-obsidian px-4 py-3">
                 <p className="text-sm text-white/70">Object reconstruction is ready for inspection.</p>
                 <div className="flex flex-wrap items-center gap-3">
-                  <SplatGenerationAction scene={scene} onSceneChange={setScene} getToken={getToken} />
                   <button
                     type="button"
                     onClick={() => router.push(`/viewer/${scene.sceneId}`)}
