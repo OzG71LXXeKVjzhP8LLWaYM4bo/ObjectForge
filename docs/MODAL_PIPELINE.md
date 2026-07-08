@@ -83,6 +83,8 @@ It uses:
 
 The checkpoint defaults to `facebook/VGGT-1B` and can be changed with `VGGT_MODEL_ID`. If Hugging Face authentication is required, provide `HF_TOKEN` in the Modal Secret.
 
+VGGT point clouds are sampled to `ROOMFLY_VGGT_MAX_POINTS`, defaulting to `1500000`.
+
 It writes:
 
 Output:

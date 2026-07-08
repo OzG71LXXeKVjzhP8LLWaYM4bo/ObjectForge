@@ -558,7 +558,7 @@ def run_vggt_reconstruction(
         point_maps,
         colors,
         reconstruction_confidence,
-        max_points=int(os.environ.get("ROOMFLY_VGGT_MAX_POINTS", "750000")),
+        max_points=int(os.environ.get("ROOMFLY_VGGT_MAX_POINTS", "1500000")),
         log=log,
     )
     if len(points_with_color) < 1000:
